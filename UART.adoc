@@ -1,0 +1,207 @@
+= Отчет по лабораторной работе UART
+
+== Задание
+
+Передавать данные c АЦП раз  в 0.5 секунды ​с помощью  UART.
+
+== Выполнение работы.
+
+* Подключим тактирование микроконтроллера к внешнему источнику HSE.
+
+* Подключим к шине тактирования  таймер, АЦП, UART и каналы для измерений.
+
+* Настроим порты PORT A.2 как TX, Port A.3 как RX на альтернативную
+функцию работы с UART в режим Push-Pull(двухтактный выход) + Pull Up(подтяжка к 1).
+Для корректной настройки выберем функцию 7 в бите AFRL.
+
+* Настроим USART2 на скорость 9600 бит/c, 1 стоп бит, 1 старт бит, без проверки
+четности, режим дискретизации 1/16, 8 бит данных.​
+
+* Включим USART и передачу.
+
+* Произведем настройку АЦП.
+- Включить датчик температуры, установив бит TSVREFE, в регистре
+ADC_Common_CCR.
+
+- Установить разрядность в регистре ADC_CR1. Установим требуемое
+значение 12 бит.
+
+- Включим АЦП в режим сканирования.Этот режим используется
+для сканирования группы аналоговых каналов.
+
+- Подключим требуемые каналы в регистре ADC1_SQR3. Выберем каналы 18 и 0.
+
+- Установить режим единичного преобразования
+
+- Установить количество измерений 2 в регистре ADC1_SQR1,
+используя для этого бит L.
+
+- Чтобы данные сохранялись после каждого измерения установим 1 бите EOCS.
+
+- Включить АЦП с помощью установки бита ADON.
+
+- Запустить АЦП на преобразование с помощью установки бита  SWSTART.
+
+* Настроим таймер TIM2 таким образом, чтобы данные выводились с частотой 0,5 с.
+
+* Запустим таймер и АЦП на преобразования
+
+* Преобразуем данные полученные с АЦП в нужные нам значения.
+
+* Сформируем массив в который запишем полученные данные и затем выведем
+их в терминал
+
+== Код программы
+
+
+[, cpp]
+
+----
+#include "rccregisters.hpp"
+#include "gpiocregisters.hpp"
+#include "gpioaregisters.hpp"
+#include <iostream>
+#include <bitset>
+#include <array>
+#include "nvicregisters.hpp"
+#include "adc1registers.hpp"
+#include "adccommonregisters.hpp"
+#include "tim2registers.hpp"
+#include "usart2registers.hpp"
+
+
+
+
+ auto delay_ms(std::uint32_t Period)
+{
+
+
+  const std::uint32_t timerValue = Period - 1U;
+  TIM2::PSC::Write(7999U);
+  TIM2::ARR::Write(timerValue);
+  TIM2::CNT::Write(0U);
+  TIM2::CR1::CEN::Enable::Set();
+  TIM2::SR::UIF::NoInterruptPending::Set();
+  while(!TIM2::SR::UIF::InterruptPending::IsSet());
+   {
+   }
+}
+
+
+
+
+extern "C"
+{
+  int __low_level_init(void)
+  {
+    RCC::CR::HSEON::On::Set();
+  while(!RCC::CR::HSERDY::Ready::IsSet())
+  {
+  }
+
+  RCC::CFGR::SW::Hse::Set();
+
+  while(!RCC::CFGR::SWS::Hse::IsSet())
+  {
+  }
+
+  RCC::CR::HSION::Off::Set();
+
+  constexpr std::uint16_t USARTDIV = (8'000'000/(9600*8*(2 - 0))) << 4U;
+
+  RCC::APB1ENR::TIM2EN::Enable::Set() ;
+  RCC::APB2ENR::ADC1EN::Enable::Set();
+  RCC::AHB1ENR::GPIOAEN::Enable::Set();
+  RCC::APB1ENR::USART2EN::Enable::Set();   //K ISTOCHNIKY TAKTIROVANIYA
+  GPIOA::MODER::MODER2::Alternate::Set();
+  GPIOA::MODER::MODER3::Alternate::Set();
+  GPIOA::OTYPER::OT2::OutputPushPull::Set();
+  GPIOA::PUPDR::PUPDR3::PullUp::Set();
+  GPIOA::AFRL::AFRL2::Af7::Set();
+  USART2::CR1::M::bit8::Set(); //8 bit dlina slova
+  USART2::CR1::OVER8::Value0::Set(); //rezhim diskretizacii
+  USART2::CR2::STOP::onestop::Set();
+  USART2::BRR::Write(USARTDIV);
+  USART2::CR1::PS::Value0::Set(); //bez proverki chetnosti
+  USART2::CR1::UE::Enable::Set(); //vkl usart
+  USART2::CR1::TE::Enable::Set(); //vlk peredacha
+
+
+  GPIOA::MODER::MODER0::Analog::Set();
+  ADC_Common::CCR::TSVREFE::Value1::Set();
+  ADC1::CR1::RES::Bit12::Set();
+  ADC1::CR1::SCAN::Value1::Set();
+  ADC1::SQR3::SQ1::Value18::Set();
+  ADC1::SQR3::SQ2::Value17::Set();
+  ADC1::SQR3::SQ3::Value0::Set();
+  ADC1::CR2::CONT::Single::Set();
+  ADC1::CR2::EOCS::aftereachchanell::Set();
+  ADC1::SQR1::L::conversions3::Set();
+  ADC1::SMPR1::Write(7U);
+  ADC1::CR2::ADON::Enable::Set();
+    return 1;
+  }
+}
+
+  uint16_t TS_CAL1 = *reinterpret_cast < uint16_t* >(0x1FFF7A2C);
+  uint16_t TS_CAL2 = *reinterpret_cast < uint16_t* >(0x1FFF7A2E);
+  float Vref = *reinterpret_cast < uint16_t* >(0x1FFF7A2A);
+
+int main()
+{
+
+    TIM2::CR1::CEN::Disable::Set();
+    for(;;)
+  {
+    unsigned int Period = 500U;
+    delay_ms(Period);
+    ADC1::CR2::SWSTART::Start::Set();
+  while(!ADC1::SR::EOC::Ready::IsSet())
+  {
+  }
+
+  uint32_t Temp_Data = ADC1::DR::DATA::Get();
+
+  while(!ADC1::SR::EOC::Ready::IsSet())
+  {
+  }
+  float Vref_Data = ADC1::DR::DATA::Get();
+
+  while(!ADC1::SR::EOC::Ready::IsSet())
+  {
+  }
+  uint32_t Res_Data = ADC1::DR::DATA::Get();
+
+  float temp = (((30.0f-110.0f)*Temp_Data+(TS_CAL1*110.0f-TS_CAL2*30.0f))/(TS_CAL1-TS_CAL2));
+  float K = Vref/Vref_Data;
+  float Voltage = (Res_Data*(3.3F/4095.0F))*K;
+
+
+    char buf[] ="                                 " ;
+    sprintf(buf, " Temperature:  %4f \n", temp);
+    for( int i=0; i< strlen(buf); i++)
+    {
+      USART2::DR::Write(buf[i]);
+      while (USART2::SR::TXE::Value0::IsSet()) // dannie ne peredautsa
+      {
+      };
+    }
+
+    char vol[] ="                                 " ;
+    sprintf(vol, " Napryagenie:  %4f \n", Voltage);
+    for( int i=0; i< strlen(vol); i++)
+    {
+      USART2::DR::Write(vol[i]);
+      while (USART2::SR::TXE::Value0::IsSet()) // dannie ne peredautsa
+      {
+      };
+    }
+
+  }
+    return 0;
+}
+----
+
+== Результат работы программы
+
+image::https://github.com/musenzovakhomenko/UART/blob/main/eeUn-M6_Eoc.jpg[]
