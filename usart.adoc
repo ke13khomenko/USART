@@ -1,0 +1,252 @@
+= Отчет по лабораторной работе UART
+
+== Задание
+
+Передавать фразу "Hello world" раз в 1 секунду ​с помощью  UART
+используя прерывание.
+
+== Выполнение работы.
+
+* Подключим тактирование микроконтроллера к внешнему источнику HSE.
+
+* Подключим к шине тактирования  таймер и UART.
+
+* Настроим порты PORT A.2 как TX, Port A.3 как RX на альтернативную
+функцию работы с UART в режим Push-Pull(двухтактный выход) + Pull Up(подтяжка к 1).
+Для корректной настройки выберем функцию 7 в бите AFRL.
+
+* Настроим USART2 на скорость 9600 бит/c, 1 стоп бит, 1 старт бит, без проверки
+четности, режим дискретизации 1/16, 8 бит данных.​
+
+* Настроим таймер TIM2 таким образом, чтобы данные выводились с частотой 1 с.
+
+* Запустим таймер
+
+* Для реализации данной программы создадим библиотечные файлы:
+usartdriver.h, usart.h, itransmit.h и usartconfig.h
+
+-  В файле usartdriver.h реализовываются функции отправки сообщения и передачи
+последующего байта данных.
+
+- В файле usart.h происходит запись посылаемого сообщения в массив,
+прерывание по  USART, а также включение и выключение прерывания и передачи.
+
+- Файл itransmit.h позволяет связать друг с другом файлы usartdriver.h и
+usart.h таким образом, что они не знают о существовании друг друга.
+
+- Файл usartconfig.h позволяет объеденить все созданные библиотечные файлы
+в один, для удобства использования.
+
+
+== Код программы
+
+main.cpp
+
+[,cpp]
+----
+#include "rccregisters.hpp"
+#include "gpiocregisters.hpp"
+#include "gpioaregisters.hpp"
+#include <iostream>
+#include <bitset>
+#include <array>
+#include "nvicregisters.hpp"
+#include "adc1registers.hpp"
+#include "adccommonregisters.hpp"
+#include "tim2registers.hpp"
+#include "usart2registers.hpp"
+#include "usartconfig.h"
+
+
+auto delay_ms(std::uint32_t Period)
+{
+  const std::uint32_t timerValue = Period - 1U;
+  TIM2::PSC::Write(7999U);
+  TIM2::ARR::Write(timerValue);
+  TIM2::CNT::Write(0U);
+  TIM2::CR1::CEN::Enable::Set();
+  TIM2::SR::UIF::NoInterruptPending::Set();
+  while(!TIM2::SR::UIF::InterruptPending::IsSet());
+   {
+   }
+}
+
+extern "C"
+{
+  int __low_level_init(void)
+   {
+     RCC::CR::HSEON::On::Set();
+     while(!RCC::CR::HSERDY::Ready::IsSet())
+      {
+      }
+
+     RCC::CFGR::SW::Hse::Set();
+
+     while(!RCC::CFGR::SWS::Hse::IsSet())
+      {
+      }
+
+     RCC::CR::HSION::Off::Set();
+
+     constexpr std::uint16_t USARTDIV = (8'000'000/(9600*8*(2 - 0))) << 4U;
+
+     RCC::APB1ENR::TIM2EN::Enable::Set() ;
+     RCC::AHB1ENR::GPIOAEN::Enable::Set();
+     RCC::APB1ENR::USART2EN::Enable::Set(); //K ISTOCHNIKY TAKTIROVANIYA
+     GPIOA::MODER::MODER2::Alternate::Set();
+     GPIOA::MODER::MODER3::Alternate::Set();
+     GPIOA::OTYPER::OT2::OutputPushPull::Set();
+     GPIOA::PUPDR::PUPDR3::PullUp::Set();
+     GPIOA::AFRL::AFRL2::Af7::Set();
+
+     TIM2::PSC::Write(7999U);
+     TIM2::ARR::Write(1000U);
+     TIM2::CNT::Write(0U);
+
+     USART2::CR1::M::bit8::Set(); //8 bit dlina slova
+     USART2::CR1::OVER8::Value0::Set(); //rezhim diskretizacii
+     USART2::CR2::STOP::onestop::Set();
+     USART2::BRR::Write(USARTDIV);
+     USART2::CR1::PS::Value0::Set(); //bez proverki chetnosti
+     USART2::CR1::UE::Enable::Set(); //vkl usart
+     USART2::CR1::TE::Enable::Set(); //vlk peredacha
+     NVIC::ISER1::Write(1U << 6U);
+     return 1;
+   }
+}
+
+int main()
+{
+   const char* message = "Hello, World ";
+   for(;;)
+    {
+      delay_ms(1000);
+      usartDriver.SendMessage(message, 14);
+    }
+   return 0;
+}
+----
+
+
+usart.h
+[,cpp]
+----
+#pragma once
+#include <cstdint>
+#include "itransmit.h" // for transmit
+//#include "usart2registers.hpp"
+
+template <typename TUSARTReg, auto& aTransmitter>
+class Usart
+ {
+   public:
+   static void WriteByte (std::uint8_t byte)
+    {
+      TUSARTReg::DR::Write(byte);
+    }
+
+   static void InterruptHandler()
+    {
+      if(TUSARTReg::SR::TXE::Value1::IsSet() && TUSARTReg::CR1::TXEIE::Value1::IsSet())
+        {
+          aTransmitter.OnNextByteTransmit();
+        }
+    }
+
+   static void EnableInterrupt()
+    {
+      TUSARTReg::CR1::TXEIE::Value1::Set();
+    }
+
+   static void DisableInterrupt()
+    {
+      TUSARTReg::CR1::TXEIE::Value0::Set();
+    }
+
+   static void EnableTransmit()
+    {
+      TUSARTReg::CR1::TE::Enable::Set();
+    }
+
+   static void DisableTransmit()
+    {
+      TUSARTReg::CR1::TE::Disable::Set();
+    }
+   //static void Config
+   private:
+   // inline static ITransmit& transmitter = aTransmitter;
+ };
+----
+
+itransmit.h
+[,cpp]
+----
+#pragma once
+
+class ITransmit
+ {
+   public:
+   virtual void OnNextByteTransmit() = 0;
+ };
+----
+
+usartdriver.h
+[,cpp]
+----
+#pragma once
+#include <array>
+#include "itransmit.h"
+#include <cassert>
+
+template <typename TUsart>
+class UsartDriver : public ITransmit
+ {
+   public:
+   void SendMessage (const char* message, std:: size_t aSize)
+    {
+      assert(size <= 255);
+      size = aSize;
+      memcpy(transmitBuffer, message, size);
+      i=0U;
+      TUsart::WriteByte(transmitBuffer[i++]);
+      TUsart::EnableTransmit();
+      TUsart::EnableInterrupt();
+    }
+
+   void OnNextByteTransmit()
+    {
+      TUsart::WriteByte(transmitBuffer[i++]);
+      if( i > size)
+        {
+          TUsart::DisableTransmit();
+          i=0U;
+        }
+    }
+
+   private:
+   std::size_t i=0U;
+   std::uint8_t transmitBuffer[255];
+   size_t size = 0U;
+ };
+----
+
+usartconfig.h
+[,cpp]
+----
+#pragma once
+#include "usart2registers.hpp"
+#include "usart.h"
+#include "usartdriver.h"
+
+class Usart2;
+
+inline UsartDriver<Usart2> usartDriver;
+
+class Usart2 : public Usart< USART2, usartDriver>
+  {
+  };
+----
+
+== Результат работы программы:
+
+image::https://github.com/musenzovakhomenko/UART/blob/main/usart.jpg[]
